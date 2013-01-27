@@ -1,0 +1,115 @@
+%{
+use Carp;
+use Language::MinCaml::Type;
+use Language::MinCaml::Node;
+use Language::MinCaml::Util;
+%}
+
+%right prec_let
+%right SEMICOLON
+%right prec_if
+%right LESS_MINUS
+%left COMMA
+%left EQUAL LESS_GREATER LESS GREATER LESS_EQUAL GREATER_EQUAL
+%left PLUS MINUS PLUS_DOT MINUS_DOT
+%left AST_DOT SLASH_DOT
+%right prec_unary_minus
+%left prec_app
+%left DOT
+
+%start exp
+
+%%
+
+simple_exp
+    : LPAREN exp RPAREN { $_[2] }
+    | LPAREN RPAREN { Node_Unit() }
+    | BOOL { Node_Bool($_[1]) }
+    | INT { Node_Int($_[1]) }
+    | FLOAT { Node_Float($_[1]) }
+    | IDENT { Node_Var($_[1]) }
+    | simple_exp DOT LPAREN exp RPAREN { Node_Get($_[1], $_[4]) }
+    ;
+
+exp
+    : simple_exp { $_[1] }
+    | NOT exp %prec prec_app { Node_Not($_[2]) }
+    | MINUS exp %prec prec_unary_minus {
+          my $node = $_[2];
+          if ($node->kind eq 'Float') {
+	      $node->children->[0] = '-' . $node->children->[0];
+	      return $node;
+          }
+	  else {
+	      return Node_Neg($node);
+          }
+      }
+    | exp PLUS exp { Node_Add($_[1], $_[3]) }
+    | exp MINUS exp { Node_Sub( $_[1], $_[3]) }
+    | exp EQUAL exp { Node_Eq($_[1], $_[3]) }
+    | exp LESS_GREATER exp { Node_Not(Node_Eq($_[1], $_[3])) }
+    | exp LESS exp { Node_Not(Node_LE($_[3], $_[1])) }
+    | exp GREATER exp { Node_Not(Node_LE($_[1], $_[3])) }
+    | exp LESS_EQUAL exp { Node_LE($_[1], $_[3]) }
+    | exp GREATER_EQUAL exp { Node_LE($_[3], $_[1]) }
+    | IF exp THEN exp ELSE exp %prec prec_if { Node_If( $_[2], $_[4], $_[6]) }
+    | MINUS_DOT exp  %prec prec_unary_minus { Node_FNeg($_[2]) }
+    | exp PLUS_DOT exp { Node_FAdd($_[1], $_[3]) }
+    | exp MINUS_DOT exp { Node_FSub($_[1], $_[3]) }
+    | exp AST_DOT exp { Node_FMul($_[1], $_[3]) }
+    | exp SLASH_DOT exp { Node_FDiv($_[1], $_[3]) }
+    | LET IDENT EQUAL exp IN exp %prec prec_let { Node_Let([$_[2], Type_Var()], $_[4], $_[6]) }
+    | LET REC fundef IN exp %prec prec_let { Node_LetRec($_[3], $_[5]) }
+    | exp actual_args %prec prec_app { Node_App($_[1], $_[2]) }
+    | elems { Node_Tuple($_[1]) }
+    | LET LPAREN pat RPAREN EQUAL exp IN exp { Node_LetTuple($_[3], $_[6], $_[8]) }
+    | simple_exp DOT LPAREN exp RPAREN LESS_MINUS exp { Node_Put($_[1], $_[4], $_[7]) }
+    | exp SEMICOLON exp { Node_Let([create_temp_ident_name(Type_Unit()), Type_Unit()], $_[1], $_[3]) }
+    | ARRAY_CREATE simple_exp simple_exp %prec prec_app { Node_Array($_[2], $_[3]) }
+    ;
+
+fundef
+    : IDENT formal_args EQUAL exp { +{'ident' => [$_[1], Type_Var()], 'args' => $_[2], 'body' => $_[4]} }
+    ;
+
+formal_args
+    : IDENT formal_args { my $args_ref = $_[2]; unshift(@$args_ref,  [$_[1], Type_Var()]); $args_ref }
+    | IDENT { [[$_[1], Type_Var()]] }
+    ;
+
+actual_args
+    : actual_args simple_exp %prec prec_app { my $args_ref = $_[1]; push(@$args_ref, $_[2]); $args_ref }
+    | simple_exp %prec prec_app { [$_[1]] }
+    ;
+
+elems
+    : elems COMMA exp { my $args_ref = $_[1]; push(@$args_ref, $_[3]); $args_ref }
+    | exp COMMA exp { [$_[1], $_[3]] }
+    ;
+
+pat
+    : pat COMMA IDENT { my $args_ref = $_[1]; push(@$args_ref, [$_[3], Type_Var()]); $args_ref }
+    | IDENT COMMA IDENT { [[$_[1], Type_Var()], [$_[3], Type_Var()]] }
+    ;
+
+%%
+
+sub error { croak "parse error!"; }
+
+sub next_token {
+    my $self = shift;
+    my $token = $self->{lexer}->next_token;
+
+    if ($token->kind eq 'EOF') {
+        return ('', undef);
+    }
+    else {
+        return ($token->kind, $token->value);
+    }
+}
+
+sub parse {
+    my($self, $lexer) = @_;
+    $self->{lexer} = $lexer;
+    return $self->YYParse( yylex => \&next_token, yyerror => \&error );
+}
